@@ -1,0 +1,4 @@
+Flask==3.0.0
+requests==2.31.0
+icalendar==5.0.11
+gunicorn==21.2.0
