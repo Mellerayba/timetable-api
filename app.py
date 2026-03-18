@@ -71,40 +71,35 @@ def get_commute():
     event_location = data.get('event_location')
     transport_mode = data.get('transport_mode', 'foot-walking') 
     
-    # Grab the api key
     ors_key = os.environ.get("ORS_API_KEY")
 
     if not ors_key:
         return jsonify({"error": "Missing ORS Key"}), 500
 
-    # convert text to coordinates 
     def get_coords(location_text):
         url = f"https://api.openrouteservice.org/geocode/search?api_key={ors_key}&text={location_text}"
         res = requests.get(url)
         if res.status_code == 200 and len(res.json()['features']) > 0:
-            return res.json()['features'][0]['geometry']['coordinates'] 
+            return res.json()['features'][0]['geometry']['coordinates']
         return None
 
     home_coords = get_coords(home_postcode)
     event_coords = get_coords(event_location)
 
     if not home_coords or not event_coords:
-        return jsonify({"error": "Could not find GPS coordinates for these locations"}), 404
+        return jsonify({"error": f"Could not find coordinates. Home: {home_coords}, Event: {event_coords}"}), 404
 
-    # Calculation for public transport 
+    # The Math Hack Route (Public Transport)
     if transport_mode == 'public_transport':
         start_str = f"{home_coords[0]},{home_coords[1]}"
         end_str = f"{event_coords[0]},{event_coords[1]}"
         
-        # Grab the driving time 
         route_url = f"https://api.openrouteservice.org/v2/directions/driving-car?api_key={ors_key}&start={start_str}&end={end_str}"
         
         route_res = requests.get(route_url)
         if route_res.status_code == 200:
             duration_seconds = route_res.json()['features'][0]['properties']['summary']['duration']
             car_minutes = duration_seconds / 60
-            
-            # Aplpy calculations to adjust for bus time
             bus_minutes = round((car_minutes * 1.5) + 5)
             
             return jsonify({
@@ -113,9 +108,10 @@ def get_commute():
                 "mode": "public_transport"
             }), 200
         else:
-            return jsonify({"error": "Routing failed"}), 500
+            # THIS IS THE NEW FIX: Print the exact ORS error!
+            return jsonify({"error": f"ORS Driving Route Error: {route_res.text}"}), 500
 
-    # Standard route - driving walking or cycling
+    # The Standard Route
     else:
         start_str = f"{home_coords[0]},{home_coords[1]}"
         end_str = f"{event_coords[0]},{event_coords[1]}"
@@ -133,7 +129,8 @@ def get_commute():
                 "mode": transport_mode
             }), 200
         else:
-            return jsonify({"error": "Routing failed"}), 500
+            # THIS IS THE NEW FIX: Print the exact ORS error!
+            return jsonify({"error": f"ORS Standard Route Error: {route_res.text}"}), 500
     
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
