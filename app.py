@@ -77,14 +77,17 @@ def get_commute():
         return jsonify({"error": "Missing ORS Key"}), 500
 
     #Convert text to GPS coordinates
+    # Helper function: Convert text to GPS coordinates
     def get_coords(location_text):
-        # forcing the api to search in manchester
-        search_query = f"{location_text}, Manchester, UK"
+        # 1. Force it to look in Manchester
+        search_query = f"{location_text}, Manchester"
         
-        url = f"https://api.openrouteservice.org/geocode/search?api_key={ors_key}&text={search_query}"
+        # 2. STRICT RULE: boundary.country=GB means it literally cannot search outside the UK
+        url = f"https://api.openrouteservice.org/geocode/search?api_key={ors_key}&text={search_query}&boundary.country=GB"
+        
         res = requests.get(url)
         if res.status_code == 200 and len(res.json().get('features', [])) > 0:
-            return res.json()['features'][0]['geometry']['coordinates']
+            return res.json()['features'][0]['geometry']['coordinates'] # Returns [Longitude, Latitude]
         return None
 
     home_coords = get_coords(home_postcode)
