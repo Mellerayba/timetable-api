@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 import icalendar
-
+import os 
 app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
@@ -61,5 +61,58 @@ def parse_ical():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+
+@app.route('/get_commute', methods=['POST'])
+def get_commute():
+    data = request.get_json()
+    
+    home_postcode = data.get('home_postcode')
+    event_location = data.get('event_location')
+    transport_mode = data.get('transport_mode', 'foot-walking') # defaults to walking if missing
+    
+    # get the api key from render
+    api_key = os.environ.get("ORS_API_KEY")
+    
+    if not api_key:
+        return jsonify({"error": "Server missing API Key"}), 500
+    if not home_postcode or not event_location:
+        return jsonify({"error": "Missing postcode or location"}), 400
+
+    # Changes text into gps coordinates 
+    def get_coords(location_text):
+        url = f"https://api.openrouteservice.org/geocode/search?api_key={api_key}&text={location_text}"
+        res = requests.get(url)
+        if res.status_code == 200 and len(res.json()['features']) > 0:
+            return res.json()['features'][0]['geometry']['coordinates']
+        return None
+
+
+    home_coords = get_coords(home_postcode)
+    event_coords = get_coords(event_location)
+
+    if not home_coords or not event_coords:
+        return jsonify({"error": "Could not find GPS coordinates for these locations"}), 404
+
+    # Calculate the travel time
+    start_str = f"{home_coords[0]},{home_coords[1]}"
+    end_str = f"{event_coords[0]},{event_coords[1]}"
+    route_url = f"https://api.openrouteservice.org/v2/directions/{transport_mode}?api_key={api_key}&start={start_str}&end={end_str}"
+    
+    route_res = requests.get(route_url)
+    
+    if route_res.status_code == 200:
+        duration_seconds = route_res.json()['features'][0]['properties']['summary']['duration']
+        duration_minutes = round(duration_seconds / 60)
+        
+        # return the data 
+        return jsonify({
+            "success": True,
+            "commute_minutes": duration_minutes,
+            "transport_mode": transport_mode
+        }), 200
+    else:
+        return jsonify({"error": "Routing API failed"}), 500
+    
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
