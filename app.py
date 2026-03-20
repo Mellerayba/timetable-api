@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import icalendar
 import os 
+from icalendar import Calendar
 app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
@@ -138,6 +139,51 @@ def get_commute():
         else:
             # THIS IS THE NEW FIX: Print the exact ORS error!
             return jsonify({"error": f"ORS Standard Route Error: {route_res.text}"}), 500
+
+
+
+@app.route('/parse_canvas', methods=['POST'])
+def parse_canvas():
+    data = request.get_json()
+    canvas_url = data.get('canvas_url')
+
+    if not canvas_url:
+        return jsonify({"error": "No Canvas URL provided"}), 400
+
+    try:
+        # 1. Download the Canvas calendar file
+        response = requests.get(canvas_url)
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to download Canvas calendar"}), 400
+
+        # 2. Read the file
+        cal = Calendar.from_ical(response.content)
+        deadlines = []
+
+        # 3. Loop through every assignment
+        for component in cal.walk('vevent'):
+            # Grab the assignment name
+            title = str(component.get('summary'))
+            
+            # Grab the due date (Canvas usually uses 'dtend' for the deadline)
+            due_date = component.get('dtend').dt
+            
+            # Format it nicely for your PHP database
+            deadlines.append({
+                "title": title,
+                "due_date": due_date.strftime('%Y-%m-%d %H:%M:%S'),
+                "status": "pending" # Ready for your To-Do list!
+            })
+
+        return jsonify({
+            "success": True, 
+            "total_deadlines": len(deadlines),
+            "deadlines": deadlines
+        }), 200
+
+    except Exception as e:
+        print(f"🛑 CANVAS PARSE ERROR: {str(e)}")
+        return jsonify({"error": f"Failed to parse Canvas feed: {str(e)}"}), 500
     
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
