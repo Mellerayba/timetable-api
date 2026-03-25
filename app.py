@@ -3,6 +3,7 @@ import requests
 import icalendar
 import os 
 from icalendar import Calendar
+from datetime import datetime, timedelta
 app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
@@ -78,12 +79,12 @@ def get_commute():
         return jsonify({"error": "Missing ORS Key"}), 500
 
     #Convert text to GPS coordinates
-    # Helper function: Convert text to GPS coordinates
+
     def get_coords(location_text):
         # 1. Force it to look in Manchester
         search_query = f"{location_text}, Manchester"
         
-        # 2. STRICT RULE: boundary.country=GB means it literally cannot search outside the UK
+        # 2. boundary.country=GB means it literally cannot search outside the UK
         url = f"https://api.openrouteservice.org/geocode/search?api_key={ors_key}&text={search_query}&boundary.country=GB"
         
         res = requests.get(url)
@@ -97,7 +98,7 @@ def get_commute():
     if not home_coords or not event_coords:
         return jsonify({"error": f"Could not find coordinates. Home: {home_coords}, Event: {event_coords}"}), 404
 
-    # The Math Hack Route (Public Transport)
+    # (Public Transport)
     if transport_mode == 'public_transport':
         start_str = f"{home_coords[0]},{home_coords[1]}"
         end_str = f"{event_coords[0]},{event_coords[1]}"
@@ -116,7 +117,7 @@ def get_commute():
                 "mode": "public_transport"
             }), 200
         else:
-            # THIS IS THE NEW FIX: Print the exact ORS error!
+          
             return jsonify({"error": f"ORS Driving Route Error: {route_res.text}"}), 500
 
     # The Standard Route
@@ -137,7 +138,7 @@ def get_commute():
                 "mode": transport_mode
             }), 200
         else:
-            # THIS IS THE NEW FIX: Print the exact ORS error!
+          
             return jsonify({"error": f"ORS Standard Route Error: {route_res.text}"}), 500
 
 
@@ -161,7 +162,7 @@ def parse_canvas():
             # Safely grab the title
             title = str(component.get('summary', 'Unknown Assignment'))
             
-            # THE FIX: Safely try to get the End Date. If it's missing, grab the Start Date.
+            # try to get the End Date. If it's missing, grab the Start Date.
             date_item = component.get('dtend') or component.get('dtstart')
             
             # If this weird event literally has no date attached to it at all, skip it entirely!
@@ -170,10 +171,10 @@ def parse_canvas():
                 
             due_date = date_item.dt
             
-            # THE SECOND FIX: Canvas sometimes sends "All Day" events as pure Dates, 
-            # instead of DateTimes. We need to format them perfectly for your SQL database.
+            # Canvas sometimes sends "All Day" events as pure Dates, 
+            # instead of DateTimes. We need to format them perfectly for the SQL database.
             if type(due_date).__name__ == 'date':
-                formatted_date = due_date.strftime('%Y-%m-%d 23:59:59') # Assume 11:59 PM
+                formatted_date = due_date.strftime('%Y-%m-%d 23:59:59') 
             else:
                 formatted_date = due_date.strftime('%Y-%m-%d %H:%M:%S')
 
@@ -192,6 +193,85 @@ def parse_canvas():
     except Exception as e:
         print(f"🛑 CANVAS PARSE ERROR: {str(e)}")
         return jsonify({"error": f"Failed to parse Canvas feed: {str(e)}"}), 500
+
+
+
+
+
+
+@app.route('/reschedule', methods=['POST'])
+def reschedule_task():
+    data = request.get_json()
     
+    try:
+        task_duration = int(data.get('duration', 60)) # Default to 60 mins if no duration
+        start_hour = int(data.get('start_hour', 9))
+        end_hour = int(data.get('end_hour', 17))
+        
+        # Parse busy slots (Events and other tasks)
+        busy_slots = []
+        for slot in data.get('busy_slots', []):
+            busy_slots.append({
+                "start": datetime.strptime(slot['start'], '%Y-%m-%d %H:%M:%S'),
+                "end": datetime.strptime(slot['end'], '%Y-%m-%d %H:%M:%S')
+            })
+            
+        # Start looking for free time starting from now
+        current_time = datetime.strptime(data.get('current_time'), '%Y-%m-%d %H:%M:%S')
+        
+        # Look ahead up to 14 days to find a slot
+        for day_offset in range(14):
+            check_date = current_time + timedelta(days=day_offset)
+            
+            # Define the working window for this day
+            work_start = check_date.replace(hour=start_hour, minute=0, second=0)
+            work_end = check_date.replace(hour=end_hour, minute=0, second=0)
+            
+            # If we are checking today, we can't schedule in the past
+            if check_date.date() == current_time.date():
+                if current_time > work_end:
+                    continue # The work day is already over, check tomorrow
+                work_start = max(work_start, current_time)
+                
+            # Filter busy slots to only those that happen on this specific day
+            todays_busy = [s for s in busy_slots if s['start'].date() == check_date.date()]
+            todays_busy.sort(key=lambda x: x['start']) # Sort chronologically
+            
+            # Find gaps between busy slots
+            current_pointer = work_start
+            
+            for event in todays_busy:
+                # If there is a gap before the next event
+                if current_pointer < event['start']:
+                    gap_minutes = (event['start'] - current_pointer).total_seconds() / 60
+                    
+                    if gap_minutes >= task_duration:
+                        # A slot is found
+                        new_start = current_pointer
+                        new_deadline = new_start + timedelta(minutes=task_duration)
+                        return jsonify({
+                            "success": True, 
+                            "new_deadline": new_deadline.strftime('%Y-%m-%d %H:%M:%S')
+                        }), 200
+                        
+                # Move the pointer to the end of the event 
+                current_pointer = max(current_pointer, event['end'])
+                
+            # Check the final gap between the last event and the end of the work day
+            if current_pointer < work_end:
+                gap_minutes = (work_end - current_pointer).total_seconds() / 60
+                if gap_minutes >= task_duration:
+                    new_start = current_pointer
+                    new_deadline = new_start + timedelta(minutes=task_duration)
+                    return jsonify({
+                        "success": True, 
+                        "new_deadline": new_deadline.strftime('%Y-%m-%d %H:%M:%S')
+                    }), 200
+                    
+        return jsonify({"error": "No free slots found in the next 14 days! You must be busy"}), 404
+
+    except Exception as e:
+        print(f"RESCHEDULE ERROR: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
